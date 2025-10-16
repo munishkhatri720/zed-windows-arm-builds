@@ -1,0 +1,131 @@
+name: Build Zed for Windows ARM
+
+on:
+  workflow_dispatch:
+    inputs:
+      zed_ref:
+        description: 'Zed branch/tag/commit to build'
+        required: false
+        default: 'main'
+
+jobs:
+  build-windows-arm:
+    runs-on: windows-latest-arm
+    
+    steps:
+      - name: Checkout Zed repository
+        uses: actions/checkout@v4
+        with:
+          repository: zed-industries/zed
+          ref: ${{ github.event.inputs.zed_ref || 'main' }}
+          submodules: recursive
+          fetch-depth: 0
+      
+      - name: Get Zed version info
+        id: version
+        run: |
+          $commit = git rev-parse --short HEAD
+          $date = Get-Date -Format "yyyyMMdd"
+          echo "commit=$commit" >> $env:GITHUB_OUTPUT
+          echo "date=$date" >> $env:GITHUB_OUTPUT
+          echo "version=zed-windows-arm64-$date-$commit" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: aarch64-pc-windows-msvc
+      
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-arm64-${{ steps.version.outputs.commit }}
+      
+      - name: Install LLVM and Clang
+        run: |
+          choco install llvm -y
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+        shell: pwsh
+      
+      - name: Verify Rust installation
+        run: |
+          rustc --version
+          cargo --version
+          rustup target list --installed
+        shell: pwsh
+      
+      - name: Build Zed for ARM64
+        run: |
+          cargo build --release --target aarch64-pc-windows-msvc
+        env:
+          CARGO_INCREMENTAL: 0
+          RUST_BACKTRACE: 1
+        shell: pwsh
+      
+      - name: Run tests
+        run: |
+          cargo test --release --target aarch64-pc-windows-msvc
+        continue-on-error: true
+        shell: pwsh
+      
+      - name: Package build artifacts
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts
+          Copy-Item target/aarch64-pc-windows-msvc/release/zed.exe artifacts/
+          Get-ChildItem target/aarch64-pc-windows-msvc/release/*.dll -ErrorAction SilentlyContinue | Copy-Item -Destination artifacts/
+          
+          # Create a version info file
+          @"
+          Zed Editor - Windows ARM64 Build
+          Built: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+          Commit: ${{ steps.version.outputs.commit }}
+          Source: https://github.com/zed-industries/zed/commit/${{ steps.version.outputs.commit }}
+          "@ | Out-File -FilePath artifacts/BUILD_INFO.txt
+        shell: pwsh
+      
+      - name: Create ZIP archive
+        run: |
+          Compress-Archive -Path artifacts/* -DestinationPath ${{ steps.version.outputs.version }}.zip
+        shell: pwsh
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.version }}
+          path: artifacts/
+          retention-days: 90
+      
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.version }}-zip
+          path: ${{ steps.version.outputs.version }}.zip
+          retention-days: 90
+      
+      - name: Create release
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: build-${{ steps.version.outputs.date }}-${{ steps.version.outputs.commit }}
+          name: Zed Windows ARM64 - ${{ steps.version.outputs.date }}
+          body: |
+            Automated build of Zed Editor for Windows ARM64
+            
+            **Build Information:**
+            - Date: ${{ steps.version.outputs.date }}
+            - Upstream Commit: ${{ steps.version.outputs.commit }}
+            - Source: https://github.com/zed-industries/zed/commit/${{ steps.version.outputs.commit }}
+            
+            **Installation:**
+            1. Download the ZIP file
+            2. Extract to your preferred location
+            3. Run `zed.exe`
+            
+            This is an unofficial build. Official releases: https://github.com/zed-industries/zed/releases
+          files: |
+            ${{ steps.version.outputs.version }}.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
