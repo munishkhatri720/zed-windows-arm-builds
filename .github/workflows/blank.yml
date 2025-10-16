@@ -13,6 +13,12 @@ jobs:
     runs-on: windows-11-arm
     
     steps:
+      - name: Enable long paths
+        run: |
+          git config --system core.longpaths true
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+        shell: pwsh
+      
       - name: Checkout Zed repository
         uses: actions/checkout@v4
         with:
@@ -20,10 +26,12 @@ jobs:
           ref: ${{ github.event.inputs.zed_ref || 'main' }}
           submodules: recursive
           fetch-depth: 0
+          path: zed
       
       - name: Get Zed version info
         id: version
         run: |
+          cd zed
           $commit = git rev-parse --short HEAD
           $date = Get-Date -Format "yyyyMMdd"
           echo "commit=$commit" >> $env:GITHUB_OUTPUT
@@ -41,6 +49,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: windows-arm64-${{ steps.version.outputs.commit }}
+          workspaces: zed
       
       - name: Install LLVM and Clang
         run: |
@@ -57,6 +66,7 @@ jobs:
       
       - name: Build Zed for ARM64
         run: |
+          cd zed
           cargo build --release --target aarch64-pc-windows-msvc
         env:
           CARGO_INCREMENTAL: 0
@@ -65,6 +75,7 @@ jobs:
       
       - name: Run tests
         run: |
+          cd zed
           cargo test --release --target aarch64-pc-windows-msvc
         continue-on-error: true
         shell: pwsh
@@ -72,8 +83,8 @@ jobs:
       - name: Package build artifacts
         run: |
           New-Item -ItemType Directory -Force -Path artifacts
-          Copy-Item target/aarch64-pc-windows-msvc/release/zed.exe artifacts/
-          Get-ChildItem target/aarch64-pc-windows-msvc/release/*.dll -ErrorAction SilentlyContinue | Copy-Item -Destination artifacts/
+          Copy-Item zed/target/aarch64-pc-windows-msvc/release/zed.exe artifacts/
+          Get-ChildItem zed/target/aarch64-pc-windows-msvc/release/*.dll -ErrorAction SilentlyContinue | Copy-Item -Destination artifacts/
           
           # Create a version info file
           @"
